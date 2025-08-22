@@ -767,7 +767,7 @@ local function SpawnTaxi(destination)
 
             if not IsPedInVehicle(PlayerPedId(), State.activeVehicle, false) then
                 if CanSendNotification() then
-                    TriggerEvent('rNotify:NotifyLeft', "you left the taxi ", "driver is waiting", "generic_textures", "tick", 4000)
+                    TriggerEvent('rNotify:NotifyLeft', "you left the taxi ", "driver is waiting not for long", "generic_textures", "tick", 4000)
                 end
                 ClearPedTasks(State.activeDriver)
                 TaskVehicleTempAction(State.activeDriver, State.activeVehicle, 1, 5000)
@@ -781,9 +781,7 @@ local function SpawnTaxi(destination)
                     local timeWaited = (currentTime - waitStartTime) / 1000
                     
                     if timeWaited > Config.waitTimeForReturn then
-                        if CanSendNotification() then
-                            TriggerEvent('rNotify:NotifyLeft', "taxi got tired of waiting ", "and left", "generic_textures", "tick", 4000)
-                        end
+                        
                         local vehicleHeading = GetEntityHeading(State.activeVehicle)
                         local vehicleCoords = GetEntityCoords(State.activeVehicle)
                         local departureDistance = 200.0 
