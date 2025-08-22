@@ -1,5 +1,6 @@
 local RSGCore = exports['rsg-core']:GetCoreObject()
-local blips = {}  
+local blips = {}
+
 local Config = {
     destinations = {
         {label = 'Valentine', coords = vector3(-291.98, 792.83, 118.59)},
@@ -40,11 +41,13 @@ local Config = {
         }
     },
     driverModel = 'A_M_M_SDDockWorkers_02',
-    spawnDistance = 15.0,
+    spawnDistance = 25.0,
     drivingSpeed = 7.0,
     arrivalDistance = 10.0,
     blipScale = 0.8,
-	waitTimeForReturn = 180 -- seconds to wait for player to return
+	waitTimeForReturn = 180, -- seconds to wait for player to return
+	lastNotificationTime = 0,
+	notificationCooldown = 5000 
 }
 
 local State = {
@@ -57,7 +60,17 @@ local State = {
 	originalPassenger = nil  
 }
 
-
+local function CanSendNotification()
+    local currentTime = GetGameTimer()
+    if State.lastNotificationTime == nil then
+        State.lastNotificationTime = 0  -- Initialize if nil
+    end
+    if currentTime - State.lastNotificationTime >= Config.notificationCooldown then
+        State.lastNotificationTime = currentTime
+        return true
+    end
+    return false
+end
 
 local function LoadModel(model)
     local hash = GetHashKey(model)
@@ -522,15 +535,32 @@ local function SpawnTaxi(destination)
     local playerPed = PlayerPedId()
     local playerCoords = GetEntityCoords(playerPed)
     
-  
-    local success, nodePosition = GetClosestVehicleNode(playerCoords.x, playerCoords.y, playerCoords.z, 0, 50.0, 0.0)
-
+    -- Get road position and heading
+    local success, nodePosition, nodeHeading = GetClosestVehicleNodeWithHeading(playerCoords.x, playerCoords.y, playerCoords.z, 0, 50.0, 0.0)
+    local heading
+    if not success then
+        -- Fallback to GetRoadSpawnPoint if needed
+        local spawnPoint = GetRoadSpawnPoint(playerCoords, GetEntityHeading(playerPed), Config.spawnDistance)
+        if spawnPoint then
+            nodePosition = spawnPoint.coords
+            heading = spawnPoint.heading
+        else
+            lib.notify({
+                title = 'Taxi',
+                description = 'Could not find valid road position',
+                type = 'error',
+                duration = 7000
+            })
+            return false
+        end
+    else
+        heading = nodeHeading
+    end
     
     if not success or not nodePosition then
         local spawnDistance = 20.0
         local bestNode = nil
         local bestDistance = 999.0
-        
         
         for angle = 0, 315, 45 do
             local testX = playerCoords.x + (spawnDistance * math.sin(math.rad(angle)))
@@ -566,7 +596,6 @@ local function SpawnTaxi(destination)
 
     local distance = math.floor(#(nodePosition - playerCoords))
     
-   
     if distance >= 60 then
         lib.notify({
             title = 'Taxi',
@@ -577,17 +606,10 @@ local function SpawnTaxi(destination)
         return false
     end
 
-   
-    local dx = destination.coords.x - nodePosition.x
-    local dy = destination.coords.y - nodePosition.y
-    local heading = GetHeadingFromVector_2d(dx, dy)
-
-    
     State.isJourneyActive = false
     State.journeyStarted = false
     ClearTaxiService()
 
-    
     local taxiHash = LoadModel(State.selectedVehicle.model)
     local driverHash = LoadModel(Config.driverModel)
     
@@ -600,13 +622,12 @@ local function SpawnTaxi(destination)
         return false
     end
 
-    
     State.activeVehicle = CreateVehicle(
         taxiHash,
         nodePosition.x,
         nodePosition.y,
         nodePosition.z,
-        heading,
+        heading, -- Use the road-aligned heading
         true,
         false
     )
@@ -620,12 +641,10 @@ local function SpawnTaxi(destination)
         return false
     end
 
-   
     SetEntityAsMissionEntity(State.activeVehicle, true, true)
     Citizen.InvokeNative(0x7263332501E07F52, State.activeVehicle, true)
     SetVehicleOnGroundProperly(State.activeVehicle)
     Citizen.InvokeNative(0x165BE2001E5E4B75, State.activeVehicle, true)
-    
     
     SetVehicleDoorsLocked(State.activeVehicle, 0)
     SetVehicleDoorsLockedForAllPlayers(State.activeVehicle, false)
@@ -634,7 +653,6 @@ local function SpawnTaxi(destination)
     end
     ConfigureVehicleAccess(State.activeVehicle)
 
-    
     State.activeDriver = CreatePed(driverHash, nodePosition.x, nodePosition.y, nodePosition.z, heading, true, true, true)
     if not DoesEntityExist(State.activeDriver) then
         DeleteVehicle(State.activeVehicle)
@@ -646,7 +664,6 @@ local function SpawnTaxi(destination)
         return false
     end
 
-    
     Citizen.InvokeNative(0x283978A15512B2FE, State.activeDriver, true)
     SetBlockingOfNonTemporaryEvents(State.activeDriver, true)
     SetEntityInvincible(State.activeDriver, true)
@@ -659,10 +676,8 @@ local function SpawnTaxi(destination)
 
     State.activeBlip = CreateTaxiBlip(State.activeVehicle)
 
-    
     Wait(1000)
 
-    
     local driverEnterAttempts = 0
     while not IsPedInVehicle(State.activeDriver, State.activeVehicle, false) and driverEnterAttempts < 3 do
         if not SetupDriverForVehicle(State.activeDriver, State.activeVehicle) then
@@ -683,7 +698,6 @@ local function SpawnTaxi(destination)
         return false
     end
 
-   
     local playerEnterAttempts = 0
     while not IsPedInVehicle(playerPed, State.activeVehicle, false) and playerEnterAttempts < 3 do
         if not GetPlayerIntoTaxi(State.activeVehicle) then
@@ -707,7 +721,6 @@ local function SpawnTaxi(destination)
     State.journeyStarted = true
     State.isJourneyActive = true
 
-    
     local function DriveToDestination()
         if DoesEntityExist(State.activeDriver) and DoesEntityExist(State.activeVehicle) then
             TaskVehicleDriveToCoord(
@@ -728,7 +741,6 @@ local function SpawnTaxi(destination)
 
     DriveToDestination()
 
-    
     CreateThread(function()
         while State.isJourneyActive and State.journeyStarted do
             Wait(1000)
@@ -754,117 +766,115 @@ local function SpawnTaxi(destination)
             end
 
             if not IsPedInVehicle(PlayerPedId(), State.activeVehicle, false) then
-                TriggerEvent('rNotify:NotifyLeft', "you left the taxi ", "driver is waiting", "generic_textures", "tick", 4000)
-
+                if CanSendNotification() then
+                    TriggerEvent('rNotify:NotifyLeft', "you left the taxi ", "driver is waiting", "generic_textures", "tick", 4000)
+                end
                 ClearPedTasks(State.activeDriver)
                 TaskVehicleTempAction(State.activeDriver, State.activeVehicle, 1, 5000)
 
-                
                 local waitingForReturn = true
-				local waitStartTime = GetGameTimer()
+                local waitStartTime = GetGameTimer()
                 while waitingForReturn and State.isJourneyActive do
                     Wait(1000)
-					
-					local currentTime = GetGameTimer()
-					local timeWaited = (currentTime - waitStartTime) / 1000  -- convert to seconds
-					
-					if timeWaited > Config.waitTimeForReturn then
-						TriggerEvent('rNotify:NotifyLeft', "taxi got tired of waiting ", "and left", "generic_textures", "tick", 4000)
-						
-						-- Drive away logic
-						local vehicleHeading = GetEntityHeading(State.activeVehicle)
-						local vehicleCoords = GetEntityCoords(State.activeVehicle)
-						local departureDistance = 200.0 
-            
-						local departureX = vehicleCoords.x + (departureDistance * math.sin(-math.rad(vehicleHeading)))
-						local departureY = vehicleCoords.y + (departureDistance * math.cos(-math.rad(vehicleHeading)))
-            
-						local ground, groundZ = GetGroundZFor_3dCoord(departureX, departureY, vehicleCoords.z + 10.0, false)
-						local departureZ = ground and groundZ or vehicleCoords.z
-            
-						if DoesEntityExist(State.activeDriver) and DoesEntityExist(State.activeVehicle) then
-							if State.activeBlip then 
-								RemoveBlip(State.activeBlip)
-								State.activeBlip = nil
-							end
-                
-							SetBlockingOfNonTemporaryEvents(State.activeDriver, true)
-							TaskVehicleDriveToCoord(
-							State.activeDriver,
-							State.activeVehicle,
-							departureX,
-							departureY,
-							departureZ,
-							8.0,
-							1.0,
-							GetHashKey(State.selectedVehicle.model),
-							786603,
-							1.0,
-							true
-						)
-                
-						CreateThread(function()
-							local startTime = GetGameTimer()
-							local timeout = 20000 
-							local minDriveTime = 8000 
-							local hasReachedMinTime = false
                     
-							while true do
-								Wait(1000)
-								local currentTime = GetGameTimer()
-								local elapsedTime = currentTime - startTime
-                        
-								if elapsedTime >= minDriveTime then
-									hasReachedMinTime = true
-								end
-                        
-								if not DoesEntityExist(State.activeVehicle) or not DoesEntityExist(State.activeDriver) then
-								break
-							end
-                        
-							local currentCoords = GetEntityCoords(State.activeVehicle)
-							local distanceTraveled = #(vehicleCoords - currentCoords)
-                        
-							if hasReachedMinTime and (distanceTraveled > 50.0 or elapsedTime > timeout) then
-                            
-								if DoesEntityExist(State.activeDriver) then
-									SetEntityAsMissionEntity(State.activeDriver, true, true)
-									DeletePed(State.activeDriver)
-								end
-                            
-								if DoesEntityExist(State.activeVehicle) then
-                                SetEntityAsMissionEntity(State.activeVehicle, true, true)
-                                DeleteVehicle(State.activeVehicle)
-                                
-                                Wait(500)
-                                if DoesEntityExist(State.activeVehicle) then
-                                    SetVehicleAsNoLongerNeeded(State.activeVehicle)
-                                    Wait(500)
-                                    DeleteVehicle(State.activeVehicle)
-                                end
+                    local currentTime = GetGameTimer()
+                    local timeWaited = (currentTime - waitStartTime) / 1000
+                    
+                    if timeWaited > Config.waitTimeForReturn then
+                        if CanSendNotification() then
+                            TriggerEvent('rNotify:NotifyLeft', "taxi got tired of waiting ", "and left", "generic_textures", "tick", 4000)
+                        end
+                        local vehicleHeading = GetEntityHeading(State.activeVehicle)
+                        local vehicleCoords = GetEntityCoords(State.activeVehicle)
+                        local departureDistance = 200.0 
+            
+                        local departureX = vehicleCoords.x + (departureDistance * math.sin(-math.rad(vehicleHeading)))
+                        local departureY = vehicleCoords.y + (departureDistance * math.cos(-math.rad(vehicleHeading)))
+            
+                        local ground, groundZ = GetGroundZFor_3dCoord(departureX, departureY, vehicleCoords.z + 10.0, false)
+                        local departureZ = ground and groundZ or vehicleCoords.z
+            
+                        if DoesEntityExist(State.activeDriver) and DoesEntityExist(State.activeVehicle) then
+                            if State.activeBlip then 
+                                RemoveBlip(State.activeBlip)
+                                State.activeBlip = nil
                             end
+                
+                            SetBlockingOfNonTemporaryEvents(State.activeDriver, true)
+                            TaskVehicleDriveToCoord(
+                                State.activeDriver,
+                                State.activeVehicle,
+                                departureX,
+                                departureY,
+                                departureZ,
+                                8.0,
+                                1.0,
+                                GetHashKey(State.selectedVehicle.model),
+                                786603,
+                                1.0,
+                                true
+                            )
+                
+                            CreateThread(function()
+                                local startTime = GetGameTimer()
+                                local timeout = 20000 
+                                local minDriveTime = 8000 
+                                local hasReachedMinTime = false
+                    
+                                while true do
+                                    Wait(1000)
+                                    local currentTime = GetGameTimer()
+                                    local elapsedTime = currentTime - startTime
+                        
+                                    if elapsedTime >= minDriveTime then
+                                        hasReachedMinTime = true
+                                    end
+                        
+                                    if not DoesEntityExist(State.activeVehicle) or not DoesEntityExist(State.activeDriver) then
+                                        break
+                                    end
+                        
+                                    local currentCoords = GetEntityCoords(State.activeVehicle)
+                                    local distanceTraveled = #(vehicleCoords - currentCoords)
+                        
+                                    if hasReachedMinTime and (distanceTraveled > 50.0 or elapsedTime > timeout) then
                             
-                            break
+                                        if DoesEntityExist(State.activeDriver) then
+                                            SetEntityAsMissionEntity(State.activeDriver, true, true)
+                                            DeletePed(State.activeDriver)
+                                        end
+                            
+                                        if DoesEntityExist(State.activeVehicle) then
+                                            SetEntityAsMissionEntity(State.activeVehicle, true, true)
+                                            DeleteVehicle(State.activeVehicle)
+                                
+                                            Wait(500)
+                                            if DoesEntityExist(State.activeVehicle) then
+                                                SetVehicleAsNoLongerNeeded(State.activeVehicle)
+                                                Wait(500)
+                                                DeleteVehicle(State.activeVehicle)
+                                            end
+                                        end
+                            
+                                        break
+                                    end
+                                end
+                    
+                                State.isJourneyActive = false
+                                State.journeyStarted = false
+                                State.activeDriver = nil
+                                State.activeVehicle = nil
+                    
+                            end)
                         end
                     end
-                    
-                    State.isJourneyActive = false
-                    State.journeyStarted = false
-                    State.activeDriver = nil
-                    State.activeVehicle = nil
-                    
-				end)
-			end
-        end
         
-                   
                     local playerPed = PlayerPedId()
                     local playerCoords = GetEntityCoords(playerPed)
                     local vehicleCoords = GetEntityCoords(State.activeVehicle)
                     local distance = #(playerCoords - vehicleCoords)
                     
                     if distance < 3.0 then
-                        
                         if IsPedInVehicle(playerPed, State.activeVehicle, false) then
                             local seat = GetPedInVehicleSeat(State.activeVehicle, -1)
                             if seat == playerPed then
@@ -877,7 +887,6 @@ local function SpawnTaxi(destination)
                                 })
                             end
                         end
-                        
                         
                         if GetPlayerIntoTaxi(State.activeVehicle) then
                             waitingForReturn = false
